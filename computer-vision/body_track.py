@@ -302,19 +302,6 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     
-    print("\n=== Improved Person Differentiation Tracker ===")
-    print("Features:")
-    print("  • Stricter matching to avoid mixing people")
-    print("  • Spatial conflict detection")
-    print("  • Tracks who was seen together")
-    print("  • Higher re-identification threshold")
-    print("\nControls:")
-    print("  'q' - Quit and save")
-    print("  'r' - Reset all person IDs")
-    print("  's' - Save database manually")
-    print("  't' - Toggle strict mode (adjust threshold)")
-    print("===============================================\n")
-    
     frame_count = 0
     
     while True:
