@@ -31,10 +31,10 @@ detective_agent = LlmAgent(
 )
 
 # --- Create Runner with app_name ---
-# runner = InMemoryRunner(
-#     agent=detective_agent,
-#     app_name="agents"  # Only the runner needs app_name
-# )
+runner = InMemoryRunner(
+    agent=detective_agent,
+    app_name="agents"  # Only the runner needs app_name
+)
 
 
 def on_snapshot(col_snapshot, changes, read_time):
