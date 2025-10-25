@@ -21,7 +21,7 @@ PERSON_DATA_FILE = "person_database.pkl"
 class ImprovedPersonTracker:
     def __init__(self, interval_duration=5.0):
         print("Loading YOLOv11 model...")
-        self.yolo_model = YOLO('yolo11n.pt')
+        self.yolo_model = YOLO('yolo11s.pt')
         
         print("Initializing DeepSORT...")
         self.tracker = DeepSort(
@@ -41,7 +41,7 @@ class ImprovedPersonTracker:
         self.temp_to_perm_id = {}
         self.next_perm_id = 1
         self.max_features_per_person = 30  # Fewer features keep identities distinct
-        self.reidentification_threshold = 0.55
+        self.reidentification_threshold = 0.45
         self.strict_accept_similarity = 0.65  # Extra-strict gate for re-ID acceptance
         self.min_detection_confidence = 0.5
         self.people_seen_together = set()
