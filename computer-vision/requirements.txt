@@ -1,0 +1,16 @@
+# YOLOv11 + DeepSORT Person Tracker Requirements
+
+# Core dependencies
+opencv-python>=4.8.0
+numpy>=1.24.0
+scipy
+
+# YOLO
+ultralytics>=8.0.0  # Includes YOLOv11
+
+# DeepSORT
+deep-sort-realtime>=1.3.2
+
+# Optional but recommended for better performance
+torch>=2.0.0  # For GPU acceleration
+torchvision>=0.15.0
