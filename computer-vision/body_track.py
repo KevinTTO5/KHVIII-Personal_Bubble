@@ -362,3 +362,19 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+'''
+in every interval, keep track a json object per person
+{
+    id: int
+    time: float
+    reappearance_counter: int
+}
+
+time will always be <= length of interval
+'''
+
+# no more threshold inside this python script
+# every X time inverval, python script will update the database
+
+
