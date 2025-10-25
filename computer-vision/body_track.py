@@ -40,7 +40,7 @@ class ImprovedPersonTracker:
         self.person_database = {}
         self.temp_to_perm_id = {}
         self.next_perm_id = 1
-        self.max_features_per_person = 10  # Fewer features keep identities distinct
+        self.max_features_per_person = 30  # Fewer features keep identities distinct
         self.reidentification_threshold = 0.55
         self.strict_accept_similarity = 0.65  # Extra-strict gate for re-ID acceptance
         self.min_detection_confidence = 0.5
@@ -366,7 +366,7 @@ class ImprovedPersonTracker:
 def main():
     tracker = ImprovedPersonTracker(interval_duration=5.0)
     
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     if not cap.isOpened():
         print("❌ Error: Could not open camera")
         return
