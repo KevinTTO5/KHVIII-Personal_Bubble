@@ -1,6 +1,8 @@
 """
-YOLOv11 + DeepSORT Person Tracker with Improved Person Differentiation
-Focuses on correctly distinguishing between different people
+YOLOv11 + DeepSORT Person Tracker with Strict Appearance Re-Identification
+Immediate ID assignment with strict appearance-only matching
+Keeps interval-based visibility and reappearance summaries
+json format is subject to change based on database needs
 """
 
 import cv2
@@ -10,21 +12,23 @@ from deep_sort_realtime.deepsort_tracker import DeepSort
 import pickle
 import os
 from scipy.spatial.distance import cosine
+import time
+import json
+from datetime import datetime
 
 PERSON_DATA_FILE = "person_database.pkl"
 
 class ImprovedPersonTracker:
-    def __init__(self):
+    def __init__(self, interval_duration=5.0):
         print("Loading YOLOv11 model...")
         self.yolo_model = YOLO('yolo11n.pt')
         
         print("Initializing DeepSORT...")
-        # Stricter matching to avoid confusing people
         self.tracker = DeepSort(
             max_age=20,
-            n_init=3,  # Balanced confirmation
-            max_iou_distance=0.5,  # STRICTER - boxes must overlap more to be same person
-            max_cosine_distance=0.25,  # STRICTER - appearance must match closely
+            n_init=3,
+            max_iou_distance=0.5,
+            max_cosine_distance=0.25,
             nn_budget=None,
             embedder="mobilenet",
             half=False,
@@ -36,14 +40,19 @@ class ImprovedPersonTracker:
         self.person_database = {}
         self.temp_to_perm_id = {}
         self.next_perm_id = 1
+        self.max_features_per_person = 10  # Fewer features keep identities distinct
+        self.reidentification_threshold = 0.55
+        self.strict_accept_similarity = 0.65  # Extra-strict gate for re-ID acceptance
+        self.min_detection_confidence = 0.5
+        self.people_seen_together = set()
         
-        # Config - STRICTER thresholds to avoid mixing people
-        self.max_features_per_person = 10  # Fewer features = more distinctive
-        self.reidentification_threshold = 0.55 
-        self.min_detection_confidence = 0.5  # Relaxed to detect people better
         
-        # For tracking when people were last seen together
-        self.people_seen_together = set()  # (id1, id2) pairs
+        # Interval tracking
+        self.interval_duration = interval_duration
+        self.interval_start_time = time.time()
+        self.interval_id = 1
+        self.current_interval_data = {}
+        self.completed_intervals = []
         
         self.load_database()
         
@@ -73,7 +82,7 @@ class ImprovedPersonTracker:
             print(f"Error saving database: {e}")
     
     def detect_people(self, frame):
-        """Detect people using YOLOv11 - relaxed filtering"""
+        """Detect people using YOLOv11"""
         results = self.yolo_model(frame, classes=[0], verbose=False)
         
         detections = []
@@ -83,58 +92,45 @@ class ImprovedPersonTracker:
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                 confidence = float(box.conf[0])
                 
-                # Simple validation - just confidence
                 if confidence > self.min_detection_confidence:
                     w = x2 - x1
                     h = y2 - y1
                     
-                    # Very basic sanity check
-                    if w > 20 and h > 40:  # Very minimal size requirement
+                    if w > 20 and h > 40:
                         detections.append(([x1, y1, w, h], confidence, 'person'))
         
         return detections
     
     def find_matching_person(self, feature_vector, current_people_in_frame):
-        """
-        Search database for matching person with STRICT matching
-        Also checks if this person was seen with others currently in frame
-        """
+        """Strict appearance-only matching using cosine similarity (best-of set)."""
         if not self.person_database or feature_vector is None:
-            return None, 0
+            return None, 0.0
         
         best_match_id = None
-        best_similarity = 0
+        best_similarity = 0.0
         
         for person_id, stored_features in self.person_database.items():
             if not stored_features:
                 continue
-            
-            # Skip if this person is already in the current frame
-            # (can't be two instances of same person)
             if person_id in current_people_in_frame:
                 continue
-                
-            similarities = []
+            
+            max_similarity_for_person = 0.0
             for stored_feature in stored_features:
                 try:
                     similarity = 1 - cosine(feature_vector, stored_feature)
-                    similarities.append(similarity)
-                except:
+                except Exception:
                     continue
+                if similarity > max_similarity_for_person:
+                    max_similarity_for_person = similarity
             
-            if similarities:
-                # Use BEST match (not average) for stricter comparison
-                max_similarity = max(similarities)
-                
-                if max_similarity > best_similarity:
-                    best_similarity = max_similarity
-                    best_match_id = person_id
+            if max_similarity_for_person > best_similarity:
+                best_similarity = max_similarity_for_person
+                best_match_id = person_id
         
-        # STRICT threshold - only match if very confident
         if best_similarity > self.reidentification_threshold:
             return best_match_id, best_similarity
-        
-        return None, 0
+        return None, 0.0
     
     def add_feature_to_database(self, person_id, feature_vector):
         """Add appearance feature to database"""
@@ -146,22 +142,20 @@ class ImprovedPersonTracker:
         
         self.person_database[person_id].append(feature_vector)
         
-        # Keep fewer features to maintain distinctiveness
         if len(self.person_database[person_id]) > self.max_features_per_person:
             self.person_database[person_id] = self.person_database[person_id][-self.max_features_per_person:]
     
     def check_spatial_conflict(self, new_bbox, existing_bboxes, threshold=0.3):
-        """
-        Check if new detection overlaps too much with existing ones
-        Two people can't occupy the same space
-        """
+        """Check if new detection overlaps too much with existing ones"""
+        if not existing_bboxes:
+            return False
+            
         x1, y1, x2, y2 = new_bbox
         area1 = (x2 - x1) * (y2 - y1)
         
         for existing_bbox in existing_bboxes:
             ex1, ey1, ex2, ey2 = existing_bbox
             
-            # Calculate intersection
             ix1 = max(x1, ex1)
             iy1 = max(y1, ey1)
             ix2 = min(x2, ex2)
@@ -171,15 +165,93 @@ class ImprovedPersonTracker:
                 intersection = (ix2 - ix1) * (iy2 - iy1)
                 area2 = (ex2 - ex1) * (ey2 - ey1)
                 
-                # If overlap is significant, reject
                 iou = intersection / (area1 + area2 - intersection)
                 if iou > threshold:
                     return True
         
         return False
     
-    def track_people(self, frame, detections):
-        """Track people with strict differentiation"""
+    def update_interval_tracking(self, tracked_people, frame_duration):
+        """Update interval tracking with proper reappearance detection"""
+        people_in_frame = set(person['id'] for person in tracked_people if person['id'] > 0)
+        
+        for person in tracked_people:
+            person_id = person['id']
+            
+            if person_id not in self.current_interval_data:
+                self.current_interval_data[person_id] = {
+                    'time': 0.0,
+                    'reappearance_counter': 1,
+                    'currently_visible': True
+                }
+            else:
+                if not self.current_interval_data[person_id]['currently_visible']:
+                    self.current_interval_data[person_id]['reappearance_counter'] += 1
+                
+                self.current_interval_data[person_id]['currently_visible'] = True
+            
+            self.current_interval_data[person_id]['time'] += frame_duration
+        
+        for person_id in self.current_interval_data:
+            if person_id not in people_in_frame:
+                self.current_interval_data[person_id]['currently_visible'] = False
+    
+    def check_and_finalize_interval(self):
+        """Check if interval should end and finalize it"""
+        current_time = time.time()
+        elapsed = current_time - self.interval_start_time
+        
+        if elapsed >= self.interval_duration:
+            self.finalize_interval(elapsed)
+            return True
+        return False
+    
+    def finalize_interval(self, actual_duration):
+        """Create complete interval JSON and reset"""
+        end_time = time.time()
+        
+        interval_json = {
+            "interval_id": self.interval_id,
+            "start_time": datetime.fromtimestamp(self.interval_start_time).isoformat() + "Z",
+            "end_time": datetime.fromtimestamp(end_time).isoformat() + "Z",
+            "duration": round(actual_duration, 2),
+            "people_data": []
+        }
+        
+        for person_id, data in self.current_interval_data.items():
+            person_json = {
+                "id": person_id,
+                "time": round(min(data['time'], self.interval_duration), 2),
+                "reappearance_counter": data['reappearance_counter']
+            }
+            interval_json["people_data"].append(person_json)
+        
+        interval_json["people_data"].sort(key=lambda x: x['id'])
+        self.completed_intervals.append(interval_json)
+        
+        # Verbose printing
+        print("\n" + "="*70)
+        print(f"INTERVAL {self.interval_id} COMPLETED")
+        print("="*70)
+        print(json.dumps(interval_json, indent=2))
+        
+        if interval_json["people_data"]:
+            print(f"\n📊 Summary: {len(interval_json['people_data'])} people detected")
+            for person in interval_json["people_data"]:
+                reapp_indicator = "🚨 CIRCLING" if person['reappearance_counter'] >= 3 else ""
+                print(f"   Person {person['id']}: {person['time']}s visible, "
+                      f"{person['reappearance_counter']} appearances {reapp_indicator}")
+        else:
+            print("\n📊 Summary: No people detected this interval")
+        
+        print("="*70 + "\n")
+        
+        self.interval_id += 1
+        self.interval_start_time = time.time()
+        self.current_interval_data = {}
+    
+    def track_people(self, frame, detections, frame_duration):
+        """Track people with strict immediate ID assignment and spatial conflict check."""
         tracks = self.tracker.update_tracks(detections, frame=frame)
         
         tracked_people = []
@@ -193,41 +265,29 @@ class ImprovedPersonTracker:
             track_id = track.track_id
             bbox = track.to_ltrb()
             
-            # Get feature
             try:
                 feature_vector = track.get_feature()
             except:
                 feature_vector = None
             
-            # New track?
+            # New track? Assign immediately using strict appearance similarity
             if track_id not in self.temp_to_perm_id:
-                # Check for spatial conflicts
+                # Avoid duplicate overlapping detections in same frame
                 if self.check_spatial_conflict(bbox, current_bboxes, threshold=0.3):
-                    print(f"⚠ Skipping overlapping detection (likely duplicate)")
                     continue
                 
-                # Try to match with existing person
-                matched_id, similarity = self.find_matching_person(feature_vector, current_people_ids)
-                
-                if matched_id:
-                    # Only accept if VERY confident
-                    if similarity > 0.65:  # Extra strict for re-ID
-                        self.temp_to_perm_id[track_id] = matched_id
-                        print(f"✓ Re-identified Person {matched_id} (similarity: {similarity:.3f})")
-                    else:
-                        # Not confident enough - treat as new person
-                        self.temp_to_perm_id[track_id] = self.next_perm_id
-                        print(f"✓ New person: Person {self.next_perm_id} (similarity {similarity:.3f} too low)")
-                        self.next_perm_id += 1
+                matched_id, similarity = self.find_matching_person(feature_vector, current_people_in_frame=current_people_ids)
+                if matched_id and similarity > self.strict_accept_similarity:
+                    self.temp_to_perm_id[track_id] = matched_id
+                    print(f"✓ Re-identified Person {matched_id} (similarity: {similarity:.3f})")
                 else:
-                    # New person
                     self.temp_to_perm_id[track_id] = self.next_perm_id
-                    print(f"✓ New person: Person {self.next_perm_id}")
+                    print(f"✓ New person: Person {self.next_perm_id}{'' if not matched_id else f' (similarity {similarity:.3f} too low)'}")
                     self.next_perm_id += 1
             
             perm_id = self.temp_to_perm_id[track_id]
             
-            # Store feature only if high quality
+            # Store feature for this person
             if feature_vector is not None:
                 self.add_feature_to_database(perm_id, feature_vector)
             
@@ -239,17 +299,19 @@ class ImprovedPersonTracker:
                 'bbox': bbox,
             })
         
-        # Record which people were seen together (helps prevent merging)
+        # Record co-occurrences
         if len(current_people_ids) >= 2:
             for i in range(len(current_people_ids)):
                 for j in range(i + 1, len(current_people_ids)):
                     pair = tuple(sorted([current_people_ids[i], current_people_ids[j]]))
                     self.people_seen_together.add(pair)
         
+        self.update_interval_tracking(tracked_people, frame_duration)
+        
         return tracked_people
     
     def draw_tracks(self, frame, tracked_people):
-        """Draw bounding boxes and IDs"""
+        """Draw bounding boxes with interval stats"""
         for person in tracked_people:
             bbox = person['bbox']
             person_id = person['id']
@@ -263,24 +325,26 @@ class ImprovedPersonTracker:
                 (color_seed * 131) % 256,
                 (color_seed * 199) % 256
             )
-            
-            # Draw thick box
-            cv2.rectangle(frame, (x1, y1), (x2, y2), person_color, 3)
-            
-            # Draw label with feature count
             label = f"Person {person_id}"
-            feature_count = len(self.person_database.get(person_id, []))
-            sublabel = f"({feature_count} features)"
             
-            # Main label background
+            if person_id in self.current_interval_data:
+                interval_time = self.current_interval_data[person_id]['time']
+                reappearances = self.current_interval_data[person_id]['reappearance_counter']
+                sublabel = f"{interval_time:.1f}s | {reappearances} app"
+                if reappearances >= 3:
+                    sublabel += " 🚨"
+            else:
+                sublabel = "Tracking"
+            
+            cv2.rectangle(frame, (x1, y1), (x2, y2), person_color, 2)
+            
             label_bg_y = max(y1 - 50, 50)
-            cv2.rectangle(frame, (x1, label_bg_y), (x1 + 200, y1), person_color, -1)
+            cv2.rectangle(frame, (x1, label_bg_y), (x1 + 220, y1), person_color, -1)
             
-            # Text
-            cv2.putText(frame, label, (x1 + 5, y1 - 28), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            cv2.putText(frame, sublabel, (x1 + 5, y1 - 8), 
+            cv2.putText(frame, label, (x1 + 5, y1 - 30), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(frame, sublabel, (x1 + 5, y1 - 10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
         
         return frame
     
@@ -290,91 +354,93 @@ class ImprovedPersonTracker:
         self.temp_to_perm_id = {}
         self.next_perm_id = 1
         self.people_seen_together = set()
+        self.current_interval_data = {}
+        self.completed_intervals = []
+        self.interval_id = 1
+        self.interval_start_time = time.time()
         if os.path.exists(PERSON_DATA_FILE):
             os.remove(PERSON_DATA_FILE)
-        print("✓ Database reset")
+        print("✓ Database and intervals reset")
 
 
 def main():
-    tracker = ImprovedPersonTracker()
+    tracker = ImprovedPersonTracker(interval_duration=5.0)
     
     cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("❌ Error: Could not open camera")
+        return
+    
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     
+    print("🎥 Starting STRICT appearance-based tracking...")
+    print(f"⏱️  Interval: {tracker.interval_duration}s")
+    print("Controls: q=quit | r=reset | s=save | p=print intervals\n")
+    
     frame_count = 0
+    last_frame_time = time.time()
     
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("error with cam")
-            break
-        
-        frame_count += 1
-        
-        # Detect and track
-        detections = tracker.detect_people(frame)
-        tracked_people = tracker.track_people(frame, detections)
-        
-        # Draw
-        frame = tracker.draw_tracks(frame, tracked_people)
-        
-        # Info overlay
-        total = len(tracker.person_database)
-        active = len(tracked_people)
-        threshold = tracker.reidentification_threshold
-        
-        cv2.putText(frame, f"Total: {total} | Active: {active}", 
-                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-        cv2.putText(frame, f"ReID Threshold: {threshold:.2f}", 
-                   (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        cv2.imshow('Improved Tracker', frame)
-        
-        # Auto-save
-        if frame_count % 150 == 0:
-            tracker.save_database()
-        
-        # Key handling
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord('r'):
-            tracker.reset()
-        elif key == ord('s'):
-            tracker.save_database()
-            print(f"✓ Saved ({total} people)")
-        elif key == ord('t'):
-            # Toggle between strict and very strict
-            if tracker.reidentification_threshold == 0.65:
-                tracker.reidentification_threshold = 0.75
-                print("Switched to VERY STRICT mode (threshold: 0.75)")
-            else:
-                tracker.reidentification_threshold = 0.65
-                print("Switched to STRICT mode (threshold: 0.65)")
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("❌ Error reading frame")
+                break
+            
+            current_time = time.time()
+            frame_duration = current_time - last_frame_time
+            last_frame_time = current_time
+            
+            frame_count += 1
+            
+            detections = tracker.detect_people(frame)
+            tracked_people = tracker.track_people(frame, detections, frame_duration)
+            tracker.check_and_finalize_interval()
+            frame = tracker.draw_tracks(frame, tracked_people)
+            
+            total = len(tracker.person_database)
+            active = len([p for p in tracked_people if p['id'] > 0])
+            
+            cv2.putText(frame, f"Active: {active} | Total: {total}", 
+                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            cv2.imshow('Strict Re-ID Tracker', frame)
+            
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                print("\n👋 Quitting...")
+                break
+            elif key == ord('r'):
+                tracker.reset()
+            elif key == ord('s'):
+                tracker.save_database()
+                print(f"💾 Saved")
+            elif key == ord('p'):
+                print("\n" + "="*70)
+                print("ALL COMPLETED INTERVALS")
+                print("="*70)
+                print(json.dumps(tracker.completed_intervals, indent=2))
+                print("="*70 + "\n")
     
-    # Final save
-    tracker.save_database()
-    cap.release()
-    cv2.destroyAllWindows()
-    print(f"\n✓ Session complete: {len(tracker.person_database)} people tracked")
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Interrupted by user (Ctrl+C)")
+    
+    except Exception as e:
+        print(f"\n❌ Error occurred: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    finally:
+        # Ensure cleanup always happens
+        print("🧹 Cleaning up...")
+        cap.release()
+        cv2.destroyAllWindows()
+        # Extra cleanup for macOS
+        cv2.waitKey(1)
+        
+        print(f"\n✅ Complete: {len(tracker.person_database)} people, {len(tracker.completed_intervals)} intervals")
 
 
 if __name__ == "__main__":
     main()
-
-'''
-in every interval, keep track a json object per person
-{
-    id: int
-    time: float
-    reappearance_counter: int
-}
-
-time will always be <= length of interval
-'''
-
-# no more threshold inside this python script
-# every X time inverval, python script will update the database
-
-
