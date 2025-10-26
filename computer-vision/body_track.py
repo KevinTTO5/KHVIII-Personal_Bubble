@@ -8,6 +8,9 @@ import cv2
 import numpy as np
 import serial
 from scipy.spatial.distance import cosine
+import torch
+from ultralytics import YOLO
+from deep_sort_realtime.deepsort_tracker import DeepSort
 import pickle
 import os
 import json
@@ -40,8 +43,39 @@ PERSON_DATA_FILE = "person_database.pkl"
 
 class ImprovedPersonTracker:
     def __init__(self, interval_duration=5.0):
+        # Device selection (CUDA > MPS > CPU) and fp16 toggle
+        try:
+            if torch.cuda.is_available():
+                self.device = 'cuda'
+                self.use_half = True
+                print("using cuda and fp16 weights")
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                self.device = 'mps'
+                self.use_half = False
+            else:
+                self.device = 'cpu'
+                self.use_half = False
+                print("using cpu, no quantization")
+        except Exception:
+            self.device = 'cpu'
+            self.use_half = False
+
         print("Loading YOLOv11 model...")
         self.yolo_model = YOLO('yolo11s.pt')
+        print("loaded yolo with cuda")
+        # Move model to device and enable fp16 when safe
+        try:
+            self.yolo_model.to(self.device)
+            self.use_half = (self.device == 'cuda')
+
+            if self.use_half:
+                major, minor = torch.cuda.get_device_capability()
+                if major < 7:
+                    self.use_half = False
+        except Exception as e:
+            print(f"Warning: could not place YOLO on {self.device}: {e}")
+            self.device = 'cpu'
+            self.use_half = False
         
         print("Initializing DeepSORT...")
         self.tracker = DeepSort(
@@ -53,8 +87,12 @@ class ImprovedPersonTracker:
             embedder="mobilenet",
             half=False,
             bgr=True,
-            embedder_gpu=False,
+            embedder_gpu=(self.device == 'cuda'),
         )
+        if (self.device == 'cuda'):
+            print("deepsort vision embedder is using cuda")
+        else:
+            print("deepsort vision embedder is not using cuda")
         
         # Database
         self.person_database = {}
@@ -113,7 +151,13 @@ class ImprovedPersonTracker:
     
     def detect_people(self, frame):
         """Detect people using YOLOv11"""
-        results = self.yolo_model(frame, classes=[0], verbose=False)
+        results = self.yolo_model(
+            frame,
+            classes=[0],
+            verbose=False,
+            device=self.device,
+            half=self.use_half,
+        )
         
         detections = []
         for result in results:
