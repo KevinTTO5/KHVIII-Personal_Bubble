@@ -61,7 +61,7 @@ class ImprovedPersonTracker:
         # Initialize Firestore (absolute creds path)
         try:
             if not firebase_admin._apps:
-                cred = credentials.Certificate('path/to/firebase_creds.json') #CHANGE THIS DEPENDING ON YOUR SYSTEM
+                cred = credentials.Certificate('./firebase_creds.json') #CHANGE THIS DEPENDING ON YOUR SYSTEM
                 firebase_admin.initialize_app(cred)
             self.db = firestore.client()
         except Exception as e:
@@ -244,7 +244,7 @@ class ImprovedPersonTracker:
         # Write interval to Firestore
         if getattr(self, 'db', None) is not None:
             try:
-                self.db.collection('intervals').add(interval_json)
+                self.db.collection('presence_windows').add(interval_json)
             except Exception as e:
                 print(f"Error writing interval to Firestore: {e}")
         
