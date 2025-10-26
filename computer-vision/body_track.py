@@ -117,7 +117,7 @@ class ImprovedPersonTracker:
         # Initialize Firestore (absolute creds path)
         try:
             if not firebase_admin._apps:
-                cred = credentials.Certificate('/Users/iaddchehaeb/Documents/GitHub/KHVIII-Personal_Bubble/service-account.json') #CHANGE THIS DEPENDING ON YOUR SYSTEM
+                cred = credentials.Certificate('../../firebase_creds.json') #CHANGE THIS DEPENDING ON YOUR SYSTEM
                 firebase_admin.initialize_app(cred)
             self.db = firestore.client()
         except Exception as e:
@@ -255,13 +255,9 @@ class ImprovedPersonTracker:
             if person_id not in self.current_interval_data:
                 self.current_interval_data[person_id] = {
                     'time': 0.0,
-                    'reappearance_counter': 1,
                     'currently_visible': True
                 }
             else:
-                if not self.current_interval_data[person_id]['currently_visible']:
-                    self.current_interval_data[person_id]['reappearance_counter'] += 1
-                
                 self.current_interval_data[person_id]['currently_visible'] = True
             
             self.current_interval_data[person_id]['time'] += frame_duration
@@ -295,8 +291,7 @@ class ImprovedPersonTracker:
         for person_id, data in self.current_interval_data.items():
             person_json = {
                 "id": person_id,
-                "time": round(min(data['time'], self.interval_duration), 2),
-                "reappearance_counter": data['reappearance_counter']
+                "time": round(min(data['time'], self.interval_duration), 2)
             }
             interval_json["people_data"].append(person_json)
         
@@ -319,9 +314,7 @@ class ImprovedPersonTracker:
         if interval_json["people_data"]:
             print(f"\n📊 Summary: {len(interval_json['people_data'])} people detected")
             for person in interval_json["people_data"]:
-                reapp_indicator = "🚨 CIRCLING" if person['reappearance_counter'] >= 3 else ""
-                print(f"   Person {person['id']}: {person['time']}s visible, "
-                      f"{person['reappearance_counter']} appearances {reapp_indicator}")
+                print(f"   Person {person['id']}: {person['time']}s visible")
         else:
             print("\n📊 Summary: No people detected this interval")
         
@@ -410,10 +403,7 @@ class ImprovedPersonTracker:
             
             if person_id in self.current_interval_data:
                 interval_time = self.current_interval_data[person_id]['time']
-                reappearances = self.current_interval_data[person_id]['reappearance_counter']
-                sublabel = f"{interval_time:.1f}s | {reappearances} app"
-                if reappearances >= 3:
-                    sublabel += " 🚨"
+                sublabel = f"{interval_time:.1f}s"
             else:
                 sublabel = "Tracking"
             
