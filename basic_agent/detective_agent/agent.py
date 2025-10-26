@@ -12,43 +12,43 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 # --- Initialize Firebase ---
-cred = credentials.Certificate("/Users/iaddchehaeb/Documents/GitHub/KHVIII-Personal_Bubble/service-account.json")
+cred = credentials.Certificate("../../service-account.json")
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-def sendNotification():
-    KEY_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service-account.json")
+# def sendNotification():
+#     KEY_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service-account.json")
 
-    if not firebase_admin._apps:  # prevents "already initialized" if you rerun in REPL
-        cred = credentials.Certificate(KEY_PATH)
-        app = firebase_admin.initialize_app(cred)
-    else:
-        app = firebase_admin.get_app()
+#     if not firebase_admin._apps:  # prevents "already initialized" if you rerun in REPL
+#         cred = credentials.Certificate(KEY_PATH)
+#         app = firebase_admin.initialize_app(cred)
+#     else:
+#         app = firebase_admin.get_app()
 
-    TOPIC = "user_1"                 # if your app subscribed to "user_1"
-    DEVICE_TOKEN = None
+#     TOPIC = "user_1"                 # if your app subscribed to "user_1"
+#     DEVICE_TOKEN = None
 
-    msg = messaging.Message(
-        data={
-            "type": "ALERT",
-            "msg": "Cyclops: high alert — person behind you for 18s!"
-        },
-        android=messaging.AndroidConfig(priority="high"),
-        topic=TOPIC if not DEVICE_TOKEN else None,
-        token=DEVICE_TOKEN if DEVICE_TOKEN else None,
-    )
+#     msg = messaging.Message(
+#         data={
+#             "type": "ALERT",
+#             "msg": "Cyclops: high alert — person behind you for 18s!"
+#         },
+#         android=messaging.AndroidConfig(priority="high"),
+#         topic=TOPIC if not DEVICE_TOKEN else None,
+#         token=DEVICE_TOKEN if DEVICE_TOKEN else None,
+#     )
 
-    resp = messaging.send(msg, app=app)
-    print("✅ Sent. Message ID:", resp)
+#     resp = messaging.send(msg, app=app)
+#     print("✅ Sent. Message ID:", resp)
 
 
-notification_agent = LlmAgent(
-    name="Notifier",
-    model="gemini-2.0-flash",
-    description="If you are called, your task is to use the tool you are given, to send a message to the FireBase",
-    instruction="You will send a notification with the tool you are given and run the function." , 
-    tools=[sendNotification],
-)
+# notification_agent = LlmAgent(
+#     name="Notifier",
+#     model="gemini-2.0-flash",
+#     description="If you are called, your task is to use the tool you are given, to send a message to the FireBase",
+#     instruction="You will send a notification with the tool you are given and run the function." , 
+#     tools=[sendNotification],
+# )
 
 root_agent = LlmAgent(
     name="detective_agent",
@@ -57,7 +57,7 @@ root_agent = LlmAgent(
     You are a detective agent that makes the decision on whether someone is suspicious based on the data you receive. A suspicious person will have a lot of time on camera (20 seconds), and various reappearances (3 or more). Always provide a list of people that may be suspicious if there are any. 
     If you decide the person is suspicious, trigger your sub_agent always. Else, return nothing.'
     """,
-    sub_agents=[notification_agent],
+    # sub_agents=[notification_agent],
 )
 
 # --- Create Runner with app_name ---
@@ -158,10 +158,9 @@ def analyze_people_data(data):
 
 
 async def start_firestore_listener():
-    col_query = db.collection("presence_windows")  # changed from "entities"
+    col_query = db.collection("presence_windows") 
     col_query.on_snapshot(on_snapshot)
 
-    import time
     print("👂 Listening for new presence window data...")
     try:
         while True:

@@ -174,7 +174,7 @@ def write_presence_window(doc: dict):
 
 def seed():
     # Simulate ids and behaviors as before
-    start = datetime.datetime.utcnow()
+    start = datetime.datetime.now(datetime.timezone.utc)
     interval_len = 5  # seconds
 
     appear_counts = {1: 0, 2: 0, 3: 0}
