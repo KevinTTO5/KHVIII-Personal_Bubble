@@ -5,6 +5,9 @@ opencv-python>=4.8.0
 numpy>=1.24.0
 scipy
 
+# Firebase
+firebase-admin>=6.5.0
+
 # YOLO
 ultralytics>=8.0.0  # Includes YOLOv11
 
