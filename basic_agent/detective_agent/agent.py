@@ -1,63 +1,47 @@
 import firebase_admin
-from firebase_admin import credentials, firestore, messaging
+from firebase_admin import credentials, firestore
 from google.adk.agents import Agent
 from google.adk.agents import LlmAgent
 from google.adk.runners import InMemoryRunner
 from google.genai import types
+
+import os
+import traceback
 import asyncio
 import time
-import os
+from dotenv import load_dotenv, find_dotenv
 
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
+# Load .env if present
+load_dotenv(find_dotenv())
+# --- Configure Google GenAI API key if available ---
+_api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GOOGLE_GENAI_API_KEY")
+if _api_key:
+    print("🔑 API key loaded successfully")
+else:
+    print("⚠️ API key not found")
 
 # --- Initialize Firebase ---
-cred = credentials.Certificate("../../service-account.json")
+cred = credentials.Certificate("/Users/williambu/hackathon-25/KHVIII-Personal_Bubble/service-account.json")
 firebase_admin.initialize_app(cred)
 db = firestore.client()
-
-# def sendNotification():
-#     KEY_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service-account.json")
-
-#     if not firebase_admin._apps:  # prevents "already initialized" if you rerun in REPL
-#         cred = credentials.Certificate(KEY_PATH)
-#         app = firebase_admin.initialize_app(cred)
-#     else:
-#         app = firebase_admin.get_app()
-
-#     TOPIC = "user_1"                 # if your app subscribed to "user_1"
-#     DEVICE_TOKEN = None
-
-#     msg = messaging.Message(
-#         data={
-#             "type": "ALERT",
-#             "msg": "Cyclops: high alert — person behind you for 18s!"
-#         },
-#         android=messaging.AndroidConfig(priority="high"),
-#         topic=TOPIC if not DEVICE_TOKEN else None,
-#         token=DEVICE_TOKEN if DEVICE_TOKEN else None,
-#     )
-
-#     resp = messaging.send(msg, app=app)
-#     print("✅ Sent. Message ID:", resp)
-
-
-# notification_agent = LlmAgent(
-#     name="Notifier",
-#     model="gemini-2.0-flash",
-#     description="If you are called, your task is to use the tool you are given, to send a message to the FireBase",
-#     instruction="You will send a notification with the tool you are given and run the function." , 
-#     tools=[sendNotification],
-# )
-
 root_agent = LlmAgent(
     name="detective_agent",
     model="gemini-2.5-flash",
     instruction="""
-    You are a detective agent that makes the decision on whether someone is suspicious based on the data you receive. A suspicious person will have a lot of time on camera (20 seconds), and various reappearances (3 or more). Always provide a list of people that may be suspicious if there are any. 
-    If you decide the person is suspicious, trigger your sub_agent always. Else, return nothing.'
-    """,
-    # sub_agents=[notification_agent],
+    You are a detective agent that identifies suspicious people by detecting cumulative patterns across the entire session.
+
+    Rules:
+    - Maintain running totals per person id across all prior messages in this session.
+    - For each id, accumulate: total_time_on_camera_seconds and total_reappearances.
+    - Mark a person as suspicious if total_time_on_camera_seconds ≥ 20 OR total_reappearances ≥ 3.
+
+    Output:
+    - For every person id present in the latest input, output exactly one line with a brief reason: 'id: suspicious - because <reason>' or 'id: not suspicious - because <reason>'.
+      The reason must reference the cumulative totals and the rule that applied, e.g., 'time=23.4s ≥ 20s' or 'reappearances=4 ≥ 3', or 'time=12.0s and reappearances=2 < thresholds'.
+    - If there are any suspicious people, also include a final line 'suspicious_ids: <comma-separated ids>'.
+    """
 )
 
 # --- Create Runner with app_name ---
@@ -65,6 +49,13 @@ runner = InMemoryRunner(
     agent=root_agent,
     app_name="agents"  # Only the runner needs app_name
 )
+# Ensure session exists for this runner/user/session_id
+try:
+    runner.session_service.create_session(
+        app_name="agents", user_id="security_system", session_id="main_session"
+    )
+except Exception:
+    pass
 # --- Define Detective Agent ---
 # root_agent = Agent(
 #     name="detective_agent",
@@ -75,7 +66,6 @@ runner = InMemoryRunner(
 #     If you decide the person is suspicious format your response like this 'id: suspicious' or 'id: not suspicious'
 #     """,
 # )
-
 
 def on_snapshot(col_snapshot, changes, read_time):
     combined_people = []
@@ -112,32 +102,29 @@ def on_snapshot(col_snapshot, changes, read_time):
 
 async def call_agent(analyzed):
     response_text = ""
-    content = types.Content(
-        role='user',
-        parts=[types.Part(text=analyzed)]
-    )
-    
     print("🔄 Starting agent execution...")
-    
-    # Process all events from the agent
-    async for event in runner.run_async(
-        user_id="security_system",
-        session_id="main_session",
-        new_message=content
-    ):
-        print(f"📥 Received event: {type(event).__name__}")
-        
-        # Check different event types
-        if hasattr(event, 'content') and event.content:
-            for part in event.content.parts:
-                if hasattr(part, 'text') and part.text:
-                    text_chunk = part.text
-                    response_text += text_chunk
-                    print(f"🔎 Agent says: {text_chunk}", flush=True)
-    
+    try:
+        # Build Content as expected by the runner
+        content = types.Content(role="user", parts=[types.Part(text=analyzed)])
+        async for event in runner.run_async(
+            user_id="security_system",
+            session_id="main_session",
+            new_message=content
+        ):
+            print(f"📥 Received event: {type(event).__name__}")
+            if hasattr(event, 'content') and event.content:
+                for part in event.content.parts:
+                    if hasattr(part, 'text') and part.text:
+                        text_chunk = part.text
+                        response_text += text_chunk
+                        print(f"🔎 Agent says: {text_chunk}", flush=True)
+    except Exception as exc:
+        print(f"❌ Agent run failed: {exc}")
+        traceback.print_exc()
+        return ""
+
     if not response_text:
         print("⚠️ Warning: No response text received from agent")
-    
     return response_text
 
 
@@ -158,13 +145,13 @@ def analyze_people_data(data):
 
 
 async def start_firestore_listener():
-    col_query = db.collection("presence_windows") 
+    col_query = db.collection("presence_windows")  # changed from "entities"
     col_query.on_snapshot(on_snapshot)
 
     print("👂 Listening for new presence window data...")
     try:
         while True:
-            time.sleep(1)
+            await asyncio.sleep(1)
     except KeyboardInterrupt:
         print("Shutting down listener...")
 

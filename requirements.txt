@@ -4,3 +4,4 @@ python-dotenv==1.1.0
 firebase-admin==6.5.0
 fastapi
 opencv-python==4.10.0.84
+deprecated
