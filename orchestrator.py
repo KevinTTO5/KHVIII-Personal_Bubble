@@ -14,8 +14,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from google.cloud.firestore import FieldFilter
 
-from google.adk.agents import LlmAgent
-from google.adk.runners import Runner
+from google.genai import Client
 from google.genai import types
 from google.adk.sessions import InMemorySessionService
 
@@ -28,7 +27,6 @@ SERVICE_ACCOUNT = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service-account.j
 DEVICE_TOPIC = os.getenv("CYCLOPS_TOPIC", "user_1")   # Android app subscribes to this
 REAPPEAR_WINDOW_S = int(os.getenv("REAPPEAR_WINDOW_S", "30"))
 DETECT_PERIOD_S = int(os.getenv("DETECT_PERIOD_S", "5"))
-os.getenv("GOOGLE_API_KEY")
 
 # thresholds
 CONSEC_THRESHOLD_S = float(os.getenv("CONSEC_THRESHOLD_S", "30.0"))
@@ -42,6 +40,9 @@ ENTITY_COOLDOWN_S = int(os.getenv("ENTITY_COOLDOWN_S", "10"))
 COL_PRESENCE_WINDOW = "presence_windows"
 COL_ENTITIES = "entities"
 
+GENAI_MODEL = os.getenv("CYCLOPS_MODEL", "gemini-2.5-flash")
+genai_client = Client(api_key=os.getenv("GOOGLE_API_KEY"))
+
 # --------------------------------------------------------------------------------------
 # Firebase init
 # --------------------------------------------------------------------------------------
@@ -53,30 +54,48 @@ db = firestore.client()
 # --------------------------------------------------------------------------------------
 # ADK Detective Agent (LLM)
 # --------------------------------------------------------------------------------------
-detective_agent = LlmAgent(
-    name="detective_agent",
-    model=os.getenv("CYCLOPS_MODEL","gemini-2.5-flash"),  # or "models/gemini-2.0-flash"
-    instruction="""
-You are Cyclops Detective. You receive a JSON object:
-{"entities":[{"entity_id": "e_3", "consec_time_s": 12.3, "total_time_s": 55.0,
-              "recent_hits_ts":[<epoch seconds>...], "true_reappear_count": 1,
-              "interval_appear_count": 7}, ...]}
+from google.genai import Client
 
-Use these FIXED rules:
-- Suspicious if consec_time_s >= 30.0
-- OR if (appearances in last ~30s minus 1) >= 3
-- OR if total_time_s >= 120.0
+genai_client = Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
-Return STRICT JSON Lines (one per entity), no extra text, no code fences:
-{"entity_id":"e_1","verdict":"SUSPICIOUS|NOT_SUSPICIOUS","reason":"<short>"}
+def run_detective_direct(entities):
+    if not entities:
+        return []
 
-If insufficient information, default to NOT_SUSPICIOUS.
-"""
+    prompt_json = build_prompt_json(entities)
+    model = os.getenv("CYCLOPS_MODEL", "gemini-1.5-flash")
+
+    system_instr = (
+    "You are Cyclops Detective. You receive a JSON object in the following form:\n"
+    '{"entities":[{"entity_id":"e_3","consec_time_s":12.3,"total_time_s":55.0,'
+    '"recent_hits_ts":[1700000000,1700000050],'
+    '"interval_appear_count":7}, ...]}\n\n"'
+    "Follow these rules to analyze each entity:\n"
+    "1. Ignore and completely skip any entity that appears to be noise:\n"
+    "   - If an entity has more than 4 appearances within any 2-second window "
+    "(based on recent_hits_ts), do not include it in the output at all.\n"
+    "2. For all remaining entities, apply these fixed detection rules:\n"
+    "   - Mark as SUSPICIOUS if consec_time_s >= 30.0\n"
+    "   - Mark as SUSPICIOUS if (appearances in the last ~30 seconds minus 1) >= 3\n"
+    "   - Mark as SUSPICIOUS if total_time_s >= 120.0\n"
+    "   - Otherwise, mark as NOT_SUSPICIOUS.\n\n"
+    "Return strict JSON Lines output (one line per analyzed entity), with no extra text:\n"
+    '{"entity_id":"e_1","verdict":"SUSPICIOUS|NOT_SUSPICIOUS","reason":"<short>"}\n\n'
+    "If an entity was ignored due to excessive duplicate detections, omit it entirely.\n"
+    "If information is insufficient, default to NOT_SUSPICIOUS."
 )
 
-runner = Runner(agent=detective_agent, app_name="agents", session_service=InMemorySessionService())
-SESSION_ID = "cyclops_detective"
-USER_ID    = "cyclops_sys"
+
+    # Use chats.create to interact with Gemini
+    chat = genai_client.chats.create(model=model)
+    response = chat.send_message(
+        f"{system_instr}\n\nNow analyze:\n{prompt_json}"
+    )
+
+    # Extract plain text output
+    text = response.text if hasattr(response, "text") else str(response)
+    return parse_jsonl(text)
+
 
 # --------------------------------------------------------------------------------------
 # Interval listener -> rollup into entities
@@ -113,9 +132,6 @@ def _update_entity_tx(tx, ref, *, add_seconds: float, interval_id: int, now_s: i
             "interval_appear_count": firestore.Increment(1),
             "recent_hits_ts": hits
         }
-        # True reappear: seen now but not continuous from prior interval
-        if not continuous and cur.get("interval_appear_count", 0) > 0:
-            updates["true_reappear_count"] = firestore.Increment(1)
 
         tx.update(ref, updates)
     else:
@@ -126,7 +142,6 @@ def _update_entity_tx(tx, ref, *, add_seconds: float, interval_id: int, now_s: i
             "consec_time_s": float(add_seconds),
             "total_time_s": float(add_seconds),
             "interval_appear_count": 1,
-            "true_reappear_count": 0,
             "recent_hits_ts": [now_s]
         })
 
@@ -193,7 +208,6 @@ def build_prompt_json(entities: List[Dict[str, Any]]) -> str:
             "consec_time_s": float(e.get("consec_time_s", 0.0)),
             "total_time_s": float(e.get("total_time_s", 0.0)),
             "recent_hits_ts": [int(t) for t in e.get("recent_hits_ts", [])],
-            "true_reappear_count": int(e.get("true_reappear_count", 0)),
             "interval_appear_count": int(e.get("interval_appear_count", 0)),
         })
     return json.dumps({"entities": items}, separators=(",", ":"))
@@ -212,88 +226,49 @@ def parse_jsonl(text: str) -> List[Dict[str, Any]]:
             continue
     return out
 
-async def ensure_session():
-    svc = getattr(runner, "session_service", None)
-    if not svc:
-        raise RuntimeError("runner.session_service missing")
-
-    # Print available methods once (debug)
-    # print("session_service methods:", dir(svc))
-
-    get_fn    = getattr(svc, "get_session", None)
-    create_fn = getattr(svc, "create_session", None) or getattr(svc, "start_session", None)
-    if not create_fn:
-        raise RuntimeError("No create_session/start_session on this ADK build")
-
-    # If exists, great; else create it
-    if get_fn:
-        try:
-            await get_fn(app_name=runner.app_name, user_id=USER_ID, session_id=SESSION_ID)
-            print(f"✅ Session already exists: {SESSION_ID}")
-        except Exception:
-            await create_fn(app_name=runner.app_name, user_id=USER_ID, session_id=SESSION_ID)
-            print(f"✅ Session created: {SESSION_ID}")
-            await get_fn(app_name=runner.app_name, user_id=USER_ID, session_id=SESSION_ID)
-            print("✅ Verified session retrievable")
-    else:
-        # Some builds don’t expose get_session; just create
-        await create_fn(app_name=runner.app_name, user_id=USER_ID, session_id=SESSION_ID)
-        print(f"✅ Session created (no get_session available): {SESSION_ID}")
-
-    
-
-async def run_detective_once(entities):
-    if not entities:
-        return []
-    prompt  = build_prompt_json(entities)
-    content = types.Content(role="user", parts=[types.Part(text=prompt)])
-
-    buf = []
-    async for ev in runner.run_async(
-        user_id=USER_ID,
-        session_id=SESSION_ID,
-        new_message=content
-    ):
-        if getattr(ev, "content", None):
-            for p in ev.content.parts or []:
-                if getattr(p, "text", None):
-                    buf.append(p.text)
-    return parse_jsonl("".join(buf))
-
-
 
 def maybe_alert(verdicts: List[Dict[str, Any]]):
     now = time.time()
+
+    # Custom message mapping based on the reason string
+    def interpret_reason(reason: str) -> str:
+        reason = reason.lower()
+        if "consec" in reason or "consecutive" in reason:
+            return "High Alert! Someone has been behind you for more than 30 consecutive seconds!"
+        elif "total" in reason or "120" in reason or "2 minute" in reason:
+            return "Alert! Someone has been following you for a total of 2 minutes or more!"
+        else:
+            return "High Alert! Suspicious behavior detected!"
+
     for v in verdicts:
         verdict = (v.get("verdict") or "").upper()
         if verdict != "SUSPICIOUS":
             continue
+
         eid = v.get("entity_id", "unknown")
         if now - _last_alert_at.get(eid, 0) < ENTITY_COOLDOWN_S:
             continue
-        reason = v.get("reason", "Detected suspicious pattern")
-        msg = f"High alert! {reason} (entity: {eid})"
+
+        reason = v.get("reason", "")
+        msg = interpret_reason(reason)
         res = send_alert_to_topic(DEVICE_TOPIC, msg, severity="HIGH", cooldown_s=8)
         _last_alert_at[eid] = now
-        print("🚨 alert:", eid, reason, res)
+
+        print(f"🚨 alert: {eid} | {msg} | Raw reason: {reason} | Result: {res}")
 
 async def detective_loop_adk():
-    await ensure_session()  # create session once
     while True:
         ents = fetch_active_entities(window_s=REAPPEAR_WINDOW_S + 10, limit=100)
-        verdicts = await run_detective_once(ents)
+        verdicts = run_detective_direct(ents)   # <-- direct call, no async, no sessions
         if verdicts:
             maybe_alert(verdicts)
         await asyncio.sleep(DETECT_PERIOD_S)
-
-
 
 
 # --------------------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------------------
 async def main():
-    await ensure_session()
     start_interval_listener()
     await asyncio.gather(
         rollup_worker(),       # intervals -> entities
