@@ -1,24 +1,42 @@
-"""
-YOLOv11 + DeepSORT Person Tracker with Strict Appearance Re-Identification
-Immediate ID assignment with strict appearance-only matching
-Keeps interval-based visibility and reappearance summaries
-json format is subject to change based on database needs
-"""
+import math
+import time
+import re
+from dataclasses import dataclass
+from typing import List, Tuple, Optional
 
 import cv2
 import numpy as np
-from ultralytics import YOLO
-from deep_sort_realtime.deepsort_tracker import DeepSort
+import serial
+from scipy.spatial.distance import cosine
 import pickle
 import os
-from scipy.spatial.distance import cosine
-import time
 import json
 from datetime import datetime
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import credentials, firestore, messaging
+from ultralytics import YOLO
+from deep_sort_realtime.deepsort_tracker import DeepSort
+
+
+# -------- CONFIGURATION --------
+SER = None          # serial handle
+SER_PORT = "/dev/tty.usbmodem101"   # set your COM port here or leave to auto-probe
+_last_line = ""     # last serial line
+
+last_alert_time = 0
+
+LAST_REAL_R = None
+LAST_REAL_TS = 0.0
+MAX_STALE_SEC = 1.0
+alpha_r = 0.4
+ema_r = None
+use_sim = False
+sim_r = 1.8
 
 PERSON_DATA_FILE = "person_database.pkl"
+
+# ------------ Your geometry and other low-level functions here (normalize, etc.) ------------
+# Include them as needed for your scoring if you like.
 
 class ImprovedPersonTracker:
     def __init__(self, interval_duration=5.0):
@@ -61,7 +79,7 @@ class ImprovedPersonTracker:
         # Initialize Firestore (absolute creds path)
         try:
             if not firebase_admin._apps:
-                cred = credentials.Certificate('../../firebase_creds.json') #CHANGE THIS DEPENDING ON YOUR SYSTEM
+                cred = credentials.Certificate('/Users/iaddchehaeb/Documents/GitHub/KHVIII-Personal_Bubble/service-account.json') #CHANGE THIS DEPENDING ON YOUR SYSTEM
                 firebase_admin.initialize_app(cred)
             self.db = firestore.client()
         except Exception as e:
@@ -381,11 +399,65 @@ class ImprovedPersonTracker:
             os.remove(PERSON_DATA_FILE)
         print("✓ Database and intervals reset")
 
+# --------- Ultrasonic I/O ---------
+def _open_serial_once():
+    global SER, SER_PORT
+    if serial is None:
+        return
+    if SER and SER.is_open:
+        return
+    ports_to_try = [SER_PORT] if SER_PORT else []
+    ports_to_try += [f"COM{i}" for i in range(3, 12)]
+    for p in ports_to_try:
+        if not p:
+            continue
+        try:
+            SER = serial.Serial(p, 9600, timeout=0.05)
+            SER_PORT = p
+            time.sleep(0.1)
+            print(f"[Serial] Connected on {p}")
+            return
+        except Exception:
+            continue
+
+def get_ultrasonic_reading():
+    global SER, _last_line
+    try:
+        _open_serial_once()
+        if not SER or not SER.is_open:
+            return None
+        line = SER.readline().decode(errors='ignore').strip()
+        if not line:
+            return None
+        _last_line = line
+        m = re.search(r"([0-9]*\.?[0-9]+)", line)
+        if not m:
+            return None
+        value = float(m.group(1))
+        if "cm" in line.lower():
+            return value / 100.0
+        if " m" in line.lower():
+            return value
+        return value / 100.0
+    except Exception:
+        try:
+            if SER:
+                SER.close()
+        except Exception:
+            pass
+        SER = None
+        return None
+
+# --------- ImprovedPersonTracker class here as you provided --------
+# (Include your entire ImprovedPersonTracker class definition from your code with no changes)
+
 
 def main():
+    global LAST_REAL_R, LAST_REAL_TS, MAX_STALE_SEC, ema_r, use_sim, sim_r
+
     tracker = ImprovedPersonTracker(interval_duration=5.0)
     
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW) #remove second param if on mac
+    cap = cv2.VideoCapture(0)  # Remove second param if on Mac
     if not cap.isOpened():
         print("❌ Error: Could not open camera")
         return
@@ -413,18 +485,66 @@ def main():
             
             frame_count += 1
             
+            # Read ultrasonic sensor
+            now = time.time()
+            r_new = get_ultrasonic_reading()
+            if r_new is not None:
+                LAST_REAL_R = r_new
+                LAST_REAL_TS = now
+            
+            if use_sim:
+                r_meas = sim_r
+            else:
+                if LAST_REAL_R is not None and (now - LAST_REAL_TS) <= MAX_STALE_SEC:
+                    r_meas = LAST_REAL_R
+                else:
+                    r_meas = ema_r if ema_r is not None else sim_r
+            
+            if ema_r is None:
+                ema_r = r_meas
+            else:
+                ema_r = alpha_r * r_meas + (1 - alpha_r) * ema_r
+            
+            def alert_action(distance):
+                global last_alert_time
+                alert_cooldown_sec = 10
+                current_time = time.time()
+                if (current_time - last_alert_time) > alert_cooldown_sec:
+                    TOPIC = "user_1"                 # if your app subscribed to "user_1"
+                    DEVICE_TOKEN = None              # or paste a real FCM registration token string
+
+                # ---- 3) build a high-priority DATA message (your service expects this) ----
+                    msg = messaging.Message(
+                        data={
+                            "type": "ALERT",
+                            "msg": f"Cyclops: alert — person {distance: .2f}m!"
+                        },
+                        android=messaging.AndroidConfig(priority="normal"),
+                        topic=TOPIC if not DEVICE_TOKEN else None,
+                        token=DEVICE_TOKEN if DEVICE_TOKEN else None,
+                    )
+                    resp = messaging.send(msg, app=firebase_admin.get_app())
+                    print("✅ Sent. Message ID:", resp)
+                    last_alert_time = current_time 
+            
+            # In your loop:
+            if ema_r < 1.0:
+                alert_action(ema_r)
+            
+            # Detect and track people
             detections = tracker.detect_people(frame)
             tracked_people = tracker.track_people(frame, detections, frame_duration)
             tracker.check_and_finalize_interval()
             frame = tracker.draw_tracks(frame, tracked_people)
             
-            total = len(tracker.person_database)
-            active = len([p for p in tracked_people if p['id'] > 0])
+            # Draw ultrasonic distance in top-left corner
+            if ema_r is not None:
+                dist_text = f"Ultrasonic dist: {ema_r:.2f} m"
+                cv2.putText(frame, dist_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7, (0, 255, 0), 2)
             
-            cv2.putText(frame, f"Active: {active} | Total: {total}", 
-                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.imshow('Strict Re-ID Tracker with Ultrasonic Distance', frame)
             
-            cv2.imshow('Strict Re-ID Tracker', frame)
             
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
@@ -441,6 +561,12 @@ def main():
                 print("="*70)
                 print(json.dumps(tracker.completed_intervals, indent=2))
                 print("="*70 + "\n")
+            elif key == ord('u'):
+                use_sim = not use_sim
+            elif key == ord('['):
+                sim_r = max(0.3, sim_r - 0.05)
+            elif key == ord(']'):
+                sim_r = min(6.0, sim_r + 0.05)
     
     except KeyboardInterrupt:
         print("\n\n⚠️  Interrupted by user (Ctrl+C)")
@@ -451,13 +577,12 @@ def main():
         traceback.print_exc()
     
     finally:
-        # Ensure cleanup always happens
         print("🧹 Cleaning up...")
         cap.release()
         cv2.destroyAllWindows()
-        # Extra cleanup for macOS
         cv2.waitKey(1)
-        
+        if SER and SER.is_open:
+            SER.close()
         print(f"\n✅ Complete: {len(tracker.person_database)} people, {len(tracker.completed_intervals)} intervals")
 
 
