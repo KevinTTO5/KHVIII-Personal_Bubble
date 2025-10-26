@@ -61,7 +61,7 @@ class ImprovedPersonTracker:
         # Initialize Firestore (absolute creds path)
         try:
             if not firebase_admin._apps:
-                cred = credentials.Certificate('./firebase_creds.json') #CHANGE THIS DEPENDING ON YOUR SYSTEM
+                cred = credentials.Certificate('../../firebase_creds.json') #CHANGE THIS DEPENDING ON YOUR SYSTEM
                 firebase_admin.initialize_app(cred)
             self.db = firestore.client()
         except Exception as e:
