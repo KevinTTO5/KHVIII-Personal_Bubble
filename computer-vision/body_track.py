@@ -551,7 +551,7 @@ def main():
             
             def alert_action(distance):
                 global last_alert_time
-                alert_cooldown_sec = 10
+                alert_cooldown_sec = 30
                 current_time = time.time()
                 if (current_time - last_alert_time) > alert_cooldown_sec:
                     TOPIC = "user_1"                 # if your app subscribed to "user_1"
