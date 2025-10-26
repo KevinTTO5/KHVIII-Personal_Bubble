@@ -15,13 +15,15 @@ from scipy.spatial.distance import cosine
 import time
 import json
 from datetime import datetime
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 PERSON_DATA_FILE = "person_database.pkl"
 
 class ImprovedPersonTracker:
     def __init__(self, interval_duration=5.0):
         print("Loading YOLOv11 model...")
-        self.yolo_model = YOLO('yolo11n.pt')
+        self.yolo_model = YOLO('yolo11s.pt')
         
         print("Initializing DeepSORT...")
         self.tracker = DeepSort(
@@ -40,8 +42,8 @@ class ImprovedPersonTracker:
         self.person_database = {}
         self.temp_to_perm_id = {}
         self.next_perm_id = 1
-        self.max_features_per_person = 10  # Fewer features keep identities distinct
-        self.reidentification_threshold = 0.55
+        self.max_features_per_person = 30  # Fewer features keep identities distinct
+        self.reidentification_threshold = 0.45
         self.strict_accept_similarity = 0.65  # Extra-strict gate for re-ID acceptance
         self.min_detection_confidence = 0.5
         self.people_seen_together = set()
@@ -55,6 +57,16 @@ class ImprovedPersonTracker:
         self.completed_intervals = []
         
         self.load_database()
+        
+        # Initialize Firestore (absolute creds path)
+        try:
+            if not firebase_admin._apps:
+                cred = credentials.Certificate('../../firebase_creds.json') #CHANGE THIS DEPENDING ON YOUR SYSTEM
+                firebase_admin.initialize_app(cred)
+            self.db = firestore.client()
+        except Exception as e:
+            print(f"Error initializing Firestore: {e}")
+            self.db = None
         
     def load_database(self):
         if os.path.exists(PERSON_DATA_FILE):
@@ -229,6 +241,13 @@ class ImprovedPersonTracker:
         interval_json["people_data"].sort(key=lambda x: x['id'])
         self.completed_intervals.append(interval_json)
         
+        # Write interval to Firestore
+        if getattr(self, 'db', None) is not None:
+            try:
+                self.db.collection('presence_windows').add(interval_json)
+            except Exception as e:
+                print(f"Error writing interval to Firestore: {e}")
+        
         # Verbose printing
         print("\n" + "="*70)
         print(f"INTERVAL {self.interval_id} COMPLETED")
@@ -366,7 +385,7 @@ class ImprovedPersonTracker:
 def main():
     tracker = ImprovedPersonTracker(interval_duration=5.0)
     
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW) #remove second param if on mac
     if not cap.isOpened():
         print("❌ Error: Could not open camera")
         return
