@@ -491,7 +491,7 @@ def main():
 
     tracker = ImprovedPersonTracker(interval_duration=5.0)
     
-    cap = cv2.VideoCapture(0)  # Remove second param if on Mac
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)  # Remove second param if on Mac
     if not cap.isOpened():
         print("❌ Error: Could not open camera")
         return
