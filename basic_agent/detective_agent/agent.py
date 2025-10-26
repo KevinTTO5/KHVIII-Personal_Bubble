@@ -1,174 +1,202 @@
-import firebase_admin
-from firebase_admin import credentials, firestore, messaging
-from google.adk.agents import Agent
-from google.adk.agents import LlmAgent
-from google.adk.runners import InMemoryRunner
-from google.genai import types
-import asyncio
-import time
-import os
+# import firebase_admin
+# from firebase_admin import credentials, firestore
+# from google.adk.agents import Agent
+# from google.adk.agents import LlmAgent
+# from google.adk.runners import InMemoryRunner
+# from google.genai import types
+# import asyncio
+# import time
 
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
+# loop = asyncio.new_event_loop()
+# asyncio.set_event_loop(loop)
 
-# --- Initialize Firebase ---
-cred = credentials.Certificate("../../service-account.json")
-firebase_admin.initialize_app(cred)
-db = firestore.client()
-
-# def sendNotification():
-#     KEY_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service-account.json")
-
-#     if not firebase_admin._apps:  # prevents "already initialized" if you rerun in REPL
-#         cred = credentials.Certificate(KEY_PATH)
-#         app = firebase_admin.initialize_app(cred)
-#     else:
-#         app = firebase_admin.get_app()
-
-#     TOPIC = "user_1"                 # if your app subscribed to "user_1"
-#     DEVICE_TOKEN = None
-
-#     msg = messaging.Message(
-#         data={
-#             "type": "ALERT",
-#             "msg": "Cyclops: high alert — person behind you for 18s!"
-#         },
-#         android=messaging.AndroidConfig(priority="high"),
-#         topic=TOPIC if not DEVICE_TOKEN else None,
-#         token=DEVICE_TOKEN if DEVICE_TOKEN else None,
-#     )
-
-#     resp = messaging.send(msg, app=app)
-#     print("✅ Sent. Message ID:", resp)
-
-
-# notification_agent = LlmAgent(
-#     name="Notifier",
-#     model="gemini-2.0-flash",
-#     description="If you are called, your task is to use the tool you are given, to send a message to the FireBase",
-#     instruction="You will send a notification with the tool you are given and run the function." , 
-#     tools=[sendNotification],
-# )
-
-root_agent = LlmAgent(
-    name="detective_agent",
-    model="gemini-2.5-flash",
-    instruction="""
-    You are a detective agent that makes the decision on whether someone is suspicious based on the data you receive. A suspicious person will have a lot of time on camera (20 seconds), and various reappearances (3 or more). Always provide a list of people that may be suspicious if there are any. 
-    If you decide the person is suspicious, trigger your sub_agent always. Else, return nothing.'
-    """,
-    # sub_agents=[notification_agent],
-)
-
-# --- Create Runner with app_name ---
-runner = InMemoryRunner(
-    agent=root_agent,
-    app_name="agents"  # Only the runner needs app_name
-)
-# --- Define Detective Agent ---
-# root_agent = Agent(
+# # --- Initialize Firebase ---
+# cred = credentials.Certificate("/Users/iaddchehaeb/Documents/GitHub/KHVIII-Personal_Bubble/service-account.json")
+# firebase_admin.initialize_app(cred)
+# db = firestore.client()
+# root_agent = LlmAgent(
 #     name="detective_agent",
-#     model="gemini-2.0-flash",
-#     description="Receives new people detection data and deciphers it.",
+#     model="gemini-2.5-flash",
 #     instruction="""
 #     You are a detective agent that makes the decision on whether someone is suspicious based on the data you receive. A suspicious person will have a lot of time on camera (20 seconds), and various reappearances (3 or more). Always provide a list of people that may be suspicious if there are any. 
 #     If you decide the person is suspicious format your response like this 'id: suspicious' or 'id: not suspicious'
-#     """,
+#     """
 # )
+
+# # --- Create Runner with app_name ---
+# runner = InMemoryRunner(
+#     agent=root_agent,
+#     app_name="agents"  # Only the runner needs app_name
+# )
+# # --- Define Detective Agent ---
+# # root_agent = Agent(
+# #     name="detective_agent",
+# #     model="gemini-2.0-flash",
+# #     description="Receives new people detection data and deciphers it.",
+# #     instruction="""
+# #     You are a detective agent that makes the decision on whether someone is suspicious based on the data you receive. A suspicious person will have a lot of time on camera (20 seconds), and various reappearances (3 or more). Always provide a list of people that may be suspicious if there are any. 
+# #     If you decide the person is suspicious format your response like this 'id: suspicious' or 'id: not suspicious'
+# #     """,
+# # )
+
+# def on_snapshot(col_snapshot, changes, read_time):
+#     combined_people = []
+
+#     for change in changes:
+#         print(f"type is {change.type.name}")
+#         if change.type.name == "ADDED":
+#             new_data = change.document.to_dict()
+#             print("🆕 New detection data received:", new_data)
+
+#             # Each presence_window document has a "people_data" list of dicts
+#             people_list = new_data.get("people_data", [])
+#             for person in people_list:
+#                 # Normalize optional fields safely
+#                 combined_people.append({
+#                     "id": person.get("id"),
+#                     "reappearances": person.get("reappearance_counter", 0),
+#                     "timeSpent": person.get("time", 0.0),
+#                     "interval_id": new_data.get("interval_id"),
+#                     "start_time": new_data.get("start_time"),
+#                     "end_time": new_data.get("end_time")
+#                 })
+
+#             print(f"Line successfully extended → total {len(combined_people)}")
+
+#     # only analyze once per batch
+#     if combined_people:
+#         combined_data = {"people": combined_people}
+#         analyzed = analyze_people_data(combined_data)
+#         print(f"\n📊 Analyzed data being sent to agent:\n{analyzed}\n")
+#         asyncio.run_coroutine_threadsafe(call_agent(analyzed), loop)
+
+
+
+# async def call_agent(analyzed):
+#     response_text = ""
+#     content = types.Content(
+#         role='user',
+#         parts=[types.Part(text=analyzed)]
+#     )
+    
+#     print("🔄 Starting agent execution...")
+    
+#     # Process all events from the agent
+#     async for event in runner.run_async(
+#         user_id="security_system",
+#         session_id="main_session",
+#         new_message=content
+#     ):
+#         print(f"📥 Received event: {type(event).__name__}")
+        
+#         # Check different event types
+#         if hasattr(event, 'content') and event.content:
+#             for part in event.content.parts:
+#                 if hasattr(part, 'text') and part.text:
+#                     text_chunk = part.text
+#                     response_text += text_chunk
+#                     print(f"🔎 Agent says: {text_chunk}", flush=True)
+    
+#     if not response_text:
+#         print("⚠️ Warning: No response text received from agent")
+    
+#     return response_text
+
+
+# def analyze_people_data(data):
+#     """
+#     Each entry now uses fields:
+#       id, reappearances, timeSpent, interval_id, start_time, end_time
+#     """
+#     result = []
+#     for person in data.get("people", []):
+#         result.append(
+#             f"Person {person.get('id')} reappeared {person.get('reappearances')} times "
+#             f"and spent {person.get('timeSpent')} seconds on screen "
+#             f"during interval {person.get('interval_id')} "
+#             f"({person.get('start_time')} → {person.get('end_time')})."
+#         )
+#     return "\n".join(result)
+
+
+# async def start_firestore_listener():
+#     col_query = db.collection("presence_windows")  # changed from "entities"
+#     col_query.on_snapshot(on_snapshot)
+
+#     import time
+#     print("👂 Listening for new presence window data...")
+#     try:
+#         while True:
+#             time.sleep(1)
+#     except KeyboardInterrupt:
+#         print("Shutting down listener...")
+
+# if __name__ == "__main__":
+#     loop = asyncio.get_event_loop()
+#     # loop.run_until_complete(create_llms)
+#     loop.run_until_complete(start_firestore_listener())
+
+
+import firebase_admin
+from firebase_admin import credentials, firestore, messaging
+import time
+import datetime
+import os
+
+cred = credentials.Certificate(
+    "/Users/iaddchehaeb/Documents/GitHub/KHVIII-Personal_Bubble/service-account.json"
+)
+firebase_admin.initialize_app(cred)
+db = firestore.client()
+
+# Keep track of people stats across intervals (in memory)
+person_stats = {}
+
+def handle_suspicious(person):
+    print(f"🚨 ALERT: Person {person['id']} suspicious!")
+    print(f"Total time: {person['timeSpent']}s, Total reappearances: {person['reappearances']}")
 
 
 def on_snapshot(col_snapshot, changes, read_time):
-    combined_people = []
-
     for change in changes:
-        print(f"type is {change.type.name}")
-        if change.type.name == "ADDED":
+        if change.type.name in ("ADDED", "MODIFIED"):
             new_data = change.document.to_dict()
-            print("🆕 New detection data received:", new_data)
-
-            # Each presence_window document has a "people_data" list of dicts
             people_list = new_data.get("people_data", [])
+            interval_id = new_data.get("interval_id")
             for person in people_list:
-                # Normalize optional fields safely
-                combined_people.append({
-                    "id": person.get("id"),
-                    "reappearances": person.get("reappearance_counter", 0),
-                    "timeSpent": person.get("time", 0.0),
-                    "interval_id": new_data.get("interval_id"),
-                    "start_time": new_data.get("start_time"),
-                    "end_time": new_data.get("end_time")
-                })
+                pid = person.get("id")
+                time_spent = person.get("time", 0.0)
+                reappearances = person.get("reappearance_counter", 0)
 
-            print(f"Line successfully extended → total {len(combined_people)}")
+                # Update totals or initialize if new
+                if pid in person_stats:
+                    prev = person_stats[pid]
+                    prev["timeSpent"] += time_spent
+                    prev["reappearances"] += reappearances
+                else:
+                    person_stats[pid] = {
+                        "timeSpent": time_spent,
+                        "reappearances": reappearances
+                    }
 
-    # only analyze once per batch
-    if combined_people:
-        combined_data = {"people": combined_people}
-        analyzed = analyze_people_data(combined_data)
-        print(f"\n📊 Analyzed data being sent to agent:\n{analyzed}\n")
-        asyncio.run_coroutine_threadsafe(call_agent(analyzed), loop)
+                # Conditional check on cumulative totals
+                if (
+                    person_stats[pid]["timeSpent"] >= 30.0
+                    or person_stats[pid]["reappearances"] >= 8
+                ):
+                    handle_suspicious({"id": pid, **person_stats[pid]})
+                else:
+                    print(f"Person {pid}: time {person_stats[pid]['timeSpent']}s, reappearances {person_stats[pid]['reappearances']}")
 
-
-
-async def call_agent(analyzed):
-    response_text = ""
-    content = types.Content(
-        role='user',
-        parts=[types.Part(text=analyzed)]
-    )
-    
-    print("🔄 Starting agent execution...")
-    
-    # Process all events from the agent
-    async for event in runner.run_async(
-        user_id="security_system",
-        session_id="main_session",
-        new_message=content
-    ):
-        print(f"📥 Received event: {type(event).__name__}")
-        
-        # Check different event types
-        if hasattr(event, 'content') and event.content:
-            for part in event.content.parts:
-                if hasattr(part, 'text') and part.text:
-                    text_chunk = part.text
-                    response_text += text_chunk
-                    print(f"🔎 Agent says: {text_chunk}", flush=True)
-    
-    if not response_text:
-        print("⚠️ Warning: No response text received from agent")
-    
-    return response_text
-
-
-def analyze_people_data(data):
-    """
-    Each entry now uses fields:
-      id, reappearances, timeSpent, interval_id, start_time, end_time
-    """
-    result = []
-    for person in data.get("people", []):
-        result.append(
-            f"Person {person.get('id')} reappeared {person.get('reappearances')} times "
-            f"and spent {person.get('timeSpent')} seconds on screen "
-            f"during interval {person.get('interval_id')} "
-            f"({person.get('start_time')} → {person.get('end_time')})."
-        )
-    return "\n".join(result)
-
-
-async def start_firestore_listener():
-    col_query = db.collection("presence_windows") 
+def start_listener():
+    col_query = db.collection("presence_windows")
     col_query.on_snapshot(on_snapshot)
-
-    print("👂 Listening for new presence window data...")
+    print("👂 Listening for presence window data...")
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("Shutting down listener...")
+        print("Stopped listening.")
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    # loop.run_until_complete(create_llms)
-    loop.run_until_complete(start_firestore_listener())
+    start_listener()
