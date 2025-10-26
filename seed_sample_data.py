@@ -153,7 +153,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 # -------- Firebase init --------
-KEY_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service-account.json")
+KEY_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service-account1.json")
 if not firebase_admin._apps:
     cred = credentials.Certificate(KEY_PATH)
     firebase_admin.initialize_app(cred)
